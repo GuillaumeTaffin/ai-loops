@@ -9,7 +9,7 @@ It is deliberately **implementation-agnostic**. It does not prescribe how artifa
 **Related documents:**
 
 - [Conceptual Framework](concept-control-loop-framework.md) — the control theory foundations: why feedback loops work, what P/PI/PID/Adaptive strategies mean, stability, convergence, and advanced parallels.
-- [Detailed Design](loop-detailed-design.md) — a concrete implementation of this architecture with a specific artifact format, naming convention, and version-controlled timeline.
+- [Detailed Design](loop-detailed-design.md) — a concrete implementation of this architecture as a Claude Code plugin, with skills, custom agents, file-based artifacts, and git as the timeline.
 
 ---
 

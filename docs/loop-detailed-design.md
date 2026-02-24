@@ -1,143 +1,255 @@
-# AI Loops — Detailed Component Design
+# AI Loops — Claude Code Plugin Implementation Design
 
-## Guiding Principle
+## 1. Purpose & Scope
 
-Each component (box) in the loop is **independent**. We do not assume a shared agent context between them. Every component receives explicit **input artifacts** and produces explicit **output artifacts**. This forces us to think clearly about what information flows where.
+This document describes a **concrete implementation** of the [Loop Architecture](loop-architecture.md) as a **Claude Code plugin**. It maps each abstract agent and artifact to a specific Claude Code construct (skill, custom agent, file) and defines the contracts, tool restrictions, and iteration lifecycle in those terms.
 
-**Artifacts are files** — specifically Markdown files with an optional YAML frontmatter for key metadata. The body is free-form content (logs, natural language, etc.). We do not impose rigid data structures: LLMs produce text, tools produce logs, and that's what flows through the system.
+The plugin is called **`ai-loops`**. It acts as a **scaffolding tool**: once installed, it helps set up a project with concrete, project-local agents via `/loop-init`. After setup, everything is explicit and local — no runtime discovery, no templates resolved on the fly. The plugin provides setup skills and templates; the project owns the agents.
 
-**Git is the timeline.** We don't duplicate history into per-iteration folders. Artifact files are overwritten each iteration and committed. To see a previous iteration's state, use `git log`, `git diff`, or `git show`. Each iteration produces at least one commit — that's the sampling clock.
-
-**Every component writes a `{role}-output.md`.** This is the uniform contract: each box reads the output files of the boxes before it, does its work, and writes its own output file. The next box in the chain knows exactly which file to read.
+For the abstract definitions of agents, artifacts, data flow, and guarantees, see [Loop Architecture](loop-architecture.md). This document does not repeat them — it specifies how they are realized.
 
 ---
 
-## Concrete Scenario
-
-To ground this design, we use a minimal example:
-
-- **Language**: Java (compiled)
-- **Task**: Write a function that computes the factorial of a number
-- **Single metric**: Compilation (does it compile without errors?)
-- **Sampling clock**: Git commits
-
-This is the simplest possible loop: one metric, one sensor, one pass/fail signal.
-
----
-
-## 1. Artifact Convention
-
-All artifacts are **Markdown files** in a known location. Each has:
-
-- A **well-known filename** following the pattern `{role}-output.md`
-- An optional **YAML frontmatter** for the few truly essential metadata fields
-- A **free-form body** for everything else (logs, instructions, notes)
-
-File layout:
+## 2. Plugin Structure
 
 ```
-loop-run/
-├── task.md                    # Task specification (static, written once)
-├── sensor-output.md           # Latest sensor output (overwritten each iteration)
-├── controller-output.md       # Latest controller instructions (overwritten each iteration)
-├── actuator-output.md         # Latest actuator report (overwritten each iteration)
-└── orchestrator-output.md     # Loop status / final result (overwritten each iteration)
+ai-loops/                              # Plugin root (this repository)
+├── .claude-plugin/
+│   └── plugin.json                    # Plugin manifest (name: "ai-loops")
+├── skills/
+│   ├── loop/
+│   │   └── SKILL.md                   # /loop — orchestrator (runs the loop)
+│   ├── loop-init/
+│   │   └── SKILL.md                   # /loop-init — initial project scaffolding
+│   ├── loop-setup/
+│   │   └── SKILL.md                   # /loop-setup — refresh config (regenerate controller after adding sensors)
+│   └── loop-status/
+│       └── SKILL.md                   # /loop-status — inspect current state
+├── templates/                         # Templates used by setup skills
+│   ├── sensor.md                      # Template for a sensor agent
+│   ├── controller.md                  # Template for the controller agent
+│   └── actuator.md                    # Template for the actuator agent
+└── README.md
 ```
 
-The naming is the contract. Each component knows which `{role}-output.md` files to read (from previous steps) and which one to write (its own).
+| Path | Role | Claude Code construct |
+|---|---|---|
+| `skills/loop/SKILL.md` | Orchestrator | Skill (`/loop`) |
+| `skills/loop-init/SKILL.md` | Project setup | Skill (`/loop-init`) |
+| `skills/loop-setup/SKILL.md` | Controller regeneration | Skill (`/loop-setup`) |
+| `skills/loop-status/SKILL.md` | Status inspection | Skill (`/loop-status`) |
+| `templates/sensor.md` | Sensor agent template | Used by `/loop-init` and manual setup |
+| `templates/controller.md` | Controller agent template | Used by `/loop-setup` |
+| `templates/actuator.md` | Actuator agent template | Used by `/loop-init` |
 
-**History lives in git.** To see what the sensor reported last iteration: `git show HEAD~1:loop-run/sensor-output.md`. To see how the controller instructions evolved: `git log -p loop-run/controller-output.md`.
+After setup, the **project** contains concrete agents and runtime artifacts:
+
+```
+.claude/agents/                        # Concrete agents (project-local)
+├── loop-sensor-compilation.md         # Sensor: runs javac
+├── loop-sensor-tests.md               # Sensor: runs mvn test
+├── loop-controller.md                 # Controller: knows all sensors, targets, priorities
+└── loop-actuator.md                   # Actuator: applies code changes
+
+.ai-loop/                             # Runtime artifacts
+├── sensor-compilation-output.md       # One output per sensor
+├── sensor-tests-output.md
+├── controller-output.md
+├── actuator-output.md
+└── orchestrator-output.md
+```
 
 ---
 
-## 2. Components, Inputs, and Outputs
+## 3. Artifact Convention
 
-### 2.1 Task Specification (Static Input)
+All loop artifacts live in a hidden directory at the project root:
 
-The task spec is the **setpoint**. Written once before the loop starts. Does not change.
+```
+.ai-loop/
+├── sensor-{name}-output.md    # One per sensor (overwritten each iteration)
+├── controller-output.md       # Latest controller decision (overwritten each iteration)
+├── actuator-output.md         # Latest actuator action report (overwritten each iteration)
+└── orchestrator-output.md     # Loop state / registry (overwritten each iteration)
+```
 
-**File**: `task.md`
+### 3.1 File Format
+
+Each artifact is a **Markdown file** with an optional **YAML frontmatter** for essential metadata and a free-form body for content. This mirrors the architecture's artifact definitions:
+
+| Architecture artifact | File | Frontmatter fields |
+|---|---|---|
+| Observation | `sensor-{name}-output.md` | `sensor` |
+| Decision | `controller-output.md` | `target-met` |
+| Action Report | `actuator-output.md` | *(none required)* |
+| Loop State | `orchestrator-output.md` | `iteration`, `status`, `max-iterations` |
+
+### 3.2 Git as Timeline
+
+**Git is the timeline.** Artifact files are overwritten each iteration and committed. History is accessed via git:
+
+- `git show HEAD~1:.ai-loop/sensor-compilation-output.md` — previous observation
+- `git log -p .ai-loop/controller-output.md` — decision history
+- `git log --oneline` — iteration timeline
+
+Each iteration produces exactly one commit. This commit is the sampling clock tick and the timeline boundary defined in the architecture.
+
+### 3.3 Task Input
+
+There is no `task.md` configuration file. The task is described **conversationally** by the user when invoking `/loop`. The orchestrator captures the task description in `orchestrator-output.md` at loop start, making it available to all agents via the loop state artifact.
+
+---
+
+## 4. Component Implementation
+
+### 4.1 Sensor Agents
+
+**Architecture role:** Sensor — observe the current state, change nothing.
+
+**Claude Code construct:** Concrete project-local agents in `.claude/agents/loop-sensor-{name}.md`. Each sensor is a separate agent file created by `/loop-init` or manually by the user.
+
+Each sensor is **self-contained**: it knows its own command, what to measure, and how to format its output. There is no central configuration file that lists sensors — each sensor agent carries its own definition.
+
+**Tool restrictions:**
+
+| Allowed | Denied |
+|---|---|
+| `Bash` (run measurement commands), `Read`, `Glob` | `Edit`, `Write`, `NotebookEdit` |
+
+The sensor is read-only. It can execute commands and read files but cannot modify anything.
+
+**Behavior contract:**
+
+1. Run the measurement command defined in its own agent instructions.
+2. Extract the useful signal from command output (may summarize verbose output).
+3. Write its output to `.ai-loop/sensor-{name}-output.md`.
+4. Make no judgment about whether the target is met — that is the controller's job.
+
+**Example sensor agent** (`.claude/agents/loop-sensor-compilation.md`):
 
 ```markdown
----
-max-iterations: 10
-sensors:
-  compilation:
-    command: "javac src/**/*.java"
-    target: "no errors"
----
+# Sensor: Compilation
 
-# Task
+You are a sensor agent for the ai-loop. Your job is to measure compilation status.
 
-Write a Java method `factorial(int n)` that returns the factorial of n.
+## Measurement
+
+Run the following command:
+
+    javac src/**/*.java
+
+## Output
+
+Write the result to `.ai-loop/sensor-compilation-output.md` with the following format:
+
+- YAML frontmatter with `sensor: compilation`
+- A "Command" section showing what was run
+- An "Output" section with the command output (summarize if very verbose)
+
+## Rules
+
+- You are READ-ONLY. Do not modify any source files.
+- Do not judge whether the output is good or bad. Just report what you see.
+- Do not use Edit, Write (except for the output file), or NotebookEdit.
 ```
 
-The frontmatter carries what's mechanically needed:
-- **`max-iterations`**: when to give up
-- **`sensors`**: a map of sensor definitions. Each one has a `command` to run and a `target` described in plain text. The target is for the controller — it reads it to understand what "done" means for this metric.
-
-There are no `target-files` — the actuator discovers which files to create or modify as it works. The body is natural language that the controller and actuator will read as-is.
-
----
-
-### 2.2 Sensor
-
-**Role**: Observe the current state of the codebase. Produce a report. Change nothing.
-
-| | |
-|---|---|
-| **Reads** | `task.md` (sensor command definition) |
-| **Runs** | The command from `task.md` → `sensors.compilation.command` |
-| **Writes** | `sensor-output.md` |
-
-**Example** — `sensor-output.md` after an iteration with errors:
+**Example output** (`.ai-loop/sensor-compilation-output.md`):
 
 ```markdown
 ---
 sensor: compilation
 ---
 
-# Sensor Output — Compilation
+# Sensor Output: compilation
 
 ## Command
-
 javac src/main/java/Factorial.java
 
 ## Output
-
 src/main/java/Factorial.java:3: error: missing return type
     public factorial(int n) {
            ^
-src/main/java/Factorial.java:8: error: reached end of file while parsing
-}
-^
 2 errors
 ```
 
-The sensor just runs the command and dumps the output. No judgment — that's the controller's job.
+**Key properties:** Idempotent, read-only, stateless. Same codebase state produces the same report.
 
-**Key properties**:
-- Idempotent: same codebase state produces the same report
-- Read-only: never modifies code
-- Dumb: captures output, does not interpret it
+### 4.2 Controller Agent
 
----
+**Architecture role:** Controller — judge the current state against the target, decide what to do next.
 
-### 2.3 Controller
+**Claude Code construct:** Concrete project-local agent in `.claude/agents/loop-controller.md`, generated by `/loop-setup` with explicit knowledge of all sensors.
 
-**Role**: Read the sensor output, judge whether the target is met, and if not, produce instructions for the actuator. This is the "brain" of the loop.
+The controller is **not** a generic agent that discovers sensors at runtime. It is regenerated by `/loop-setup` whenever the sensor set changes, and contains an explicit list of all sensors, their output files, target conditions, and priority ordering.
 
-| | |
+**Tool restrictions:**
+
+| Allowed | Denied |
 |---|---|
-| **Reads** | `task.md`, `sensor-output.md`, git history for previous states |
-| **Writes** | `controller-output.md` |
+| `Read`, `Glob`, `Grep`, `Bash` (git commands only) | `Edit`, `Write`, `NotebookEdit` |
 
-To access history, the controller (or the orchestrator on its behalf) can use git:
-- `git show HEAD~1:loop-run/sensor-output.md` — previous sensor output
-- `git show HEAD~1:loop-run/controller-output.md` — previous instructions
-- `git log --oneline` — iteration timeline
+The controller can read all artifacts and access git history for trend analysis. It cannot modify code or artifacts other than its own output.
 
-**Example — first pass** (code doesn't exist yet):
+**Behavior contract:**
+
+1. Read all sensor output files listed in its agent instructions.
+2. Read `orchestrator-output.md` for the task description and iteration history.
+3. Optionally read git history for previous observations and decisions (trend detection, stagnation avoidance).
+4. For each sensor, compare the observation against the target condition defined in its own instructions.
+5. Produce `controller-output.md` with:
+   - `target-met: true` if all targets are satisfied, or `target-met: false` otherwise.
+   - When target is not met: diagnosis of current errors and corrective instructions for the actuator.
+   - Historical context when relevant (what was tried before, whether progress is being made).
+
+**Decision protocol:**
+
+- If **all** sensor targets are met → `target-met: true`. No instructions needed.
+- If **any** sensor target is not met → `target-met: false`. Instructions must address all unmet targets.
+- The controller is the **sole owner** of the `target-met` judgment.
+- When multiple targets are unmet, the controller uses the priority ordering in its instructions to determine which to address first.
+
+**Example controller agent** (`.claude/agents/loop-controller.md`, generated by `/loop-setup`):
+
+```markdown
+# Controller
+
+You are the controller agent for the ai-loop. You judge the current state
+against target conditions and produce corrective instructions.
+
+## Sensors
+
+The following sensors are active. Read each output file and compare against
+its target condition.
+
+### 1. compilation (priority: highest)
+- **Output file:** `.ai-loop/sensor-compilation-output.md`
+- **Target:** no compilation errors
+
+### 2. tests (priority: normal)
+- **Output file:** `.ai-loop/sensor-tests-output.md`
+- **Target:** all tests pass
+
+## Decision Protocol
+
+1. Read all sensor output files listed above.
+2. Read `.ai-loop/orchestrator-output.md` for the task description and history.
+3. Compare each sensor's output against its target.
+4. If ALL targets are met → set `target-met: true`.
+5. If ANY target is not met → set `target-met: false` and provide instructions.
+6. When multiple targets fail, address them in priority order.
+
+## Output
+
+Write your decision to `.ai-loop/controller-output.md`.
+
+## Rules
+
+- You are the SOLE OWNER of the target-met judgment.
+- Do not modify any source files. Read only.
+- Use git history to detect trends and avoid repeating failed strategies.
+```
+
+**Output format** (`controller-output.md`):
 
 ```markdown
 ---
@@ -146,227 +258,323 @@ target-met: false
 
 # Controller Output
 
-This is the first iteration. No Java files exist yet, so the compilation
-sensor has nothing to compile.
+The compilation sensor reports 2 errors. Target "no errors" is not met.
 
-## Instructions for actuator
+## Instructions for Actuator
 
-Write a Java file `src/main/java/Factorial.java` containing a public class
-with a static method `factorial(int n)` that returns the factorial of n.
+1. **Line 3**: Add `long` as the return type for the `factorial` method.
+2. **Line 8**: Close the method body with a `}`.
 
-Use a simple iterative approach with a for loop. Return type should be `long`
-to handle larger values.
+## Context
+
+First fix attempt. Code was just created last iteration.
 ```
 
-**Example — fixing errors**:
+**Key properties:** Stateless (all context from artifacts and git), sole target-met authority, generated with explicit sensor knowledge.
 
-```markdown
----
-target-met: false
----
+### 4.3 Actuator Agent
 
-# Controller Output
+**Architecture role:** Actuator — apply corrective changes to the codebase.
 
-The previous iteration produced code that does not compile. There are 2 errors.
+**Claude Code construct:** Concrete project-local agent in `.claude/agents/loop-actuator.md`.
 
-## Errors to fix
+**Tool restrictions:**
 
-1. **Line 3**: Missing return type on the method declaration. Add `long` as return type.
-2. **Line 8**: Unclosed brace — the class or method body is not properly closed.
-
-## Context from history
-
-This is the first fix attempt. The code was just created last iteration.
-Likely minor syntax issues from the initial generation.
-```
-
-**Example — target met**:
-
-```markdown
----
-target-met: true
----
-
-# Controller Output
-
-The compilation sensor reports no errors. The target "no errors" is met.
-No further action needed.
-```
-
-**Key properties**:
-- Stateless: all context comes from reading artifact files and git history
-- Responsible for the `target-met` judgment
-- Output is natural language that the actuator can directly consume
-
----
-
-### 2.4 Actuator
-
-**Role**: Take controller instructions and apply code changes. This is the "hands" of the system.
-
-| | |
+| Allowed | Denied |
 |---|---|
-| **Reads** | `controller-output.md`, the current codebase |
-| **Does** | Modifies code files (does NOT commit — that's the orchestrator's job) |
-| **Writes** | `actuator-output.md` |
+| `Read`, `Edit`, `Write`, `Glob`, `Grep`, `Bash` | *(no restrictions — full code modification)* |
 
-**Example** — `actuator-output.md`:
+The actuator has full access to code modification tools. It is the only agent that changes the codebase.
+
+**Behavior contract:**
+
+1. Read `controller-output.md` for instructions.
+2. Read the current codebase as needed to understand what to change.
+3. Apply the changes described by the controller.
+4. Write `actuator-output.md` summarizing what was done.
+5. Do **NOT** commit — the orchestrator handles commits.
+6. Do **NOT** read sensor output files directly — the controller has already digested the observation into instructions.
+
+**Output format** (`actuator-output.md`):
 
 ```markdown
 # Actuator Output
 
-## What was done
+## What Was Done
 
-Created `src/main/java/Factorial.java` with a `factorial(int n)` method
-using an iterative approach with a for loop. Return type is `long`.
+Fixed two compilation errors in `src/main/java/Factorial.java`:
+- Added `long` return type to the `factorial` method declaration.
+- Added missing closing brace for the class body.
 
-## Files changed
+## Files Changed
 
-- `src/main/java/Factorial.java` (created)
-
-## Notes
-
-Chose iterative approach over recursive to avoid stack overflow for large inputs.
+- `src/main/java/Factorial.java` (modified)
 ```
 
-The actuator documents what it did in its own words. The code changes live in the working tree until the orchestrator commits at the end of the iteration. `actuator-output.md` is the actuator's own account of what it did.
+**Key properties:** Stateless, follows controller instructions, does not judge target status.
 
-**Key properties**:
-- Receives only the controller's instructions — no direct access to sensor output
-- Modifies code but does NOT commit
-- Stateless: no memory from previous iterations
+### 4.4 Orchestrator Skill (`/loop`)
 
----
+**Architecture role:** Orchestrator — drive the cycle, wire agents together, manage lifecycle and state.
 
-### 2.5 Orchestrator
+**Claude Code construct:** Skill defined in `skills/loop/SKILL.md`. When the user types `/loop`, Claude receives the orchestrator instructions and drives the iteration cycle.
 
-**Role**: Drive the cycle. Wire the components together. Manage lifecycle. **Commit at the end of each iteration.**
+**Why a skill, not an agent:** The orchestrator must remain in the **main conversation context** where it can:
 
-The orchestrator is the only piece that "sees" the whole picture. It calls each component in order, and after the sensor has measured the new state, the orchestrator commits everything (code changes + all output files) as a single commit. This commit is the sampling clock tick.
+- Spawn sensor, controller, and actuator agents via the `Task` tool.
+- Manage git commits directly.
+- Interact with the user (report progress, ask for confirmation on termination).
 
-| | |
-|---|---|
-| **Reads** | `task.md`, `controller-output.md` (for target-met), `actuator-output.md` |
-| **Manages** | Iteration counting, calling each component in order, termination, **git commits** |
-| **Writes** | `orchestrator-output.md` |
+An agent runs in a subprocess and cannot do these things.
 
-The orchestrator's role within one iteration:
-1. Read `sensor-output.md` (from previous iteration) — prepare context
-2. Call the controller → reads target-met from `controller-output.md`
-3. If `target-met: true` → write final `orchestrator-output.md`, commit, stop
-4. If `max-iterations` reached → write final `orchestrator-output.md`, commit, stop
-5. Otherwise → call actuator → call sensor → write `orchestrator-output.md` → **commit** → next iteration
+**Behavior contract:**
 
-`orchestrator-output.md` is the **shared registry** of the loop. It is updated at the start and end of every iteration. All other components can read it if they need shared context (current iteration number, loop status, accumulated history), but only the orchestrator writes to it.
+1. Capture the task description from the conversation into `orchestrator-output.md`.
+2. Read sensor agent files from `.claude/agents/loop-sensor-*.md` to know which sensors exist.
+3. **Initial measurement**: Spawn all sensor agents **in parallel** via parallel `Task` tool calls. Commit the results.
+4. **Iteration loop**:
+   a. Read all `sensor-{name}-output.md` files. Update `orchestrator-output.md`.
+   b. Check iteration count against `max-iterations`. If reached → finalize with status `max-iterations-reached`, commit, stop.
+   c. Spawn the controller agent. Read `controller-output.md`.
+   d. If `target-met: true` → finalize with status `complete`, commit, stop.
+   e. Spawn the actuator agent.
+   f. Spawn all sensor agents **in parallel** (measures the new state).
+   g. Commit all changes (code + all `.ai-loop/` artifacts) as a single commit.
+   h. Next iteration.
 
-**Example — mid-loop** (after iteration 1, not done yet):
+**Agent spawning:** The orchestrator uses the `Task` tool to spawn each agent. Sensors are spawned in parallel; controller and actuator are spawned sequentially:
 
-```markdown
----
-iteration: 1
-status: running
-max-iterations: 10
----
+```
+# Parallel sensor spawning
+Task(subagent_type="loop-sensor-compilation", prompt="Run your measurement ...")
+Task(subagent_type="loop-sensor-tests", prompt="Run your measurement ...")
+# (spawned simultaneously)
 
-# Orchestrator Output
-
-## Current status
-
-Loop is running. Iteration 1 completed. Target not yet met.
-
-## History
-
-- **Iteration 0**: Code created. Sensor reported compilation errors.
-  Controller instructed to create the file. Actuator created Factorial.java.
-- **Iteration 1**: Sensor reported 2 compilation errors. Controller
-  instructed fixes. Actuator applied fixes.
+# Sequential
+Task(subagent_type="loop-controller", prompt="Read sensor outputs and produce decision ...")
+Task(subagent_type="loop-actuator", prompt="Read controller-output.md and apply changes ...")
 ```
 
-**Example — loop complete**:
+**Git commit management:** At the end of each iteration (and after the initial measurement), the orchestrator commits:
+
+- All files in `.ai-loop/` (artifact updates)
+- All codebase changes made by the actuator
+
+The commit message follows a convention: `ai-loop: iteration {N} — {brief summary}`.
+
+**Loop State output** (`orchestrator-output.md`):
 
 ```markdown
 ---
 iteration: 2
-status: complete
+status: running
+max-iterations: 10
 ---
 
-# Orchestrator Output
+# Loop State
 
-## Result
+## Task
 
-The loop completed after 2 iterations. The target was met.
+Implement a `factorial(int n)` method in Java that returns the factorial of n.
+Use an iterative approach. Handle edge cases (n=0, negative input).
+
+## Current Status
+
+Iteration 2 completed. Target not yet met.
 
 ## History
 
-- **Iteration 0**: Code created. Compilation failed (2 errors: missing return type, unclosed brace).
-- **Iteration 1**: Errors fixed. Compilation succeeded.
-
-## Final State
-
-The file `src/main/java/Factorial.java` compiles cleanly.
+- **Iteration 0**: Initial measurement. Compilation failed (no source files).
+- **Iteration 1**: Code created. Compilation failed (2 errors).
+- **Iteration 2**: Errors fixed. Compilation succeeded. Tests not yet passing.
 ```
-
-Because this file is committed at each iteration, any component can also look at its git history to see how the loop has evolved over time.
 
 ---
 
-## 3. The Chain: Who Reads Whose Output
+## 5. Skills Reference
 
-The key insight is that **the sensor ends the iteration, not starts it**. The `sensor-output.md` from iteration N-1 is what the controller reads at the start of iteration N. Git tracks the history — the files on disk always represent the latest state.
+### 5.1 `/loop-init` — Initial Project Setup
 
-The order within one iteration:
+**Purpose:** First-time project scaffolding. Creates concrete agent files and the `.ai-loop/` directory.
 
-```
-┌──────────────┐     ┌──────────────┐     ┌──────────┐     ┌─────────┐
-│ Orchestrator │────→│  Controller  │────→│ Actuator │────→│ Sensor  │
-│              │     │              │     │          │     │         │
-│ reads:       │     │ reads:       │     │ reads:   │     │ reads:  │
-│  task.md     │     │  task.md     │     │  ctrl-out│     │  task.md│
-│  sensor-out  │     │  sensor-out  │     │  codebase│     │ (cmd)   │
-│  (from N-1)  │     │  git history │     │          │     │ codebase│
-│              │     │              │     │ writes:  │     │         │
-│ writes:      │     │ writes:      │     │  code    │     │ writes: │
-│  orch-output │     │  ctrl-output │     │  act-out │     │  sensor-│
-│              │     │              │     │          │     │  output │
-└──────────────┘     └──────────────┘     └──────────┘     └─────────┘
-       ↑                                                        │
-       └──────── orchestrator commits everything ───────────────┘
-```
+**Behavior:**
 
-| Step | Component | Reads | Writes |
-|---|---|---|---|
-| 1 | **Orchestrator** | `task.md` + `sensor-output.md` (from previous iteration) | `orchestrator-output.md` |
-| 2 | **Controller** | `task.md` + `sensor-output.md` + git history | `controller-output.md` |
-| 3 | **Actuator** | `controller-output.md` + codebase | `actuator-output.md` + code changes (no commit) |
-| 4 | **Sensor** | `task.md` (command def) + codebase (post-actuator) | `sensor-output.md` |
-| 5 | **Orchestrator** | all output files | **git commit** (code + all output files) |
+1. Interactive: asks the user what sensors to create (compilation, tests, linting, etc.).
+2. Creates `.claude/agents/loop-sensor-{name}.md` for each sensor, using `templates/sensor.md` as a base and filling in the sensor-specific command and description.
+3. Creates `.claude/agents/loop-actuator.md` from `templates/actuator.md`.
+4. Runs `/loop-setup` logic to generate `.claude/agents/loop-controller.md` with knowledge of the initial sensors.
+5. Creates the `.ai-loop/` directory.
+6. Suggests `.gitignore` patterns or an `ai-loop` branch strategy.
 
-The orchestrator commits at the end — code changes, sensor output, and all other output files go into a single commit. This commit is the sampling clock tick and becomes the state that the next iteration starts from.
+### 5.2 `/loop-setup` — Refresh Configuration
+
+**Purpose:** Regenerate the controller after sensor changes. Idempotent — safe to run at any time.
+
+**Behavior:**
+
+1. Glob for `.claude/agents/loop-sensor-*.md`.
+2. Read each sensor agent to extract: name, what it measures, command, expected output shape.
+3. Regenerate `.claude/agents/loop-controller.md` from `templates/controller.md` with:
+   - List of all sensors and their output files
+   - Target condition per sensor
+   - Priority ordering
+   - Decision protocol (how to combine multiple sensor results into a single target-met judgment)
+4. Optionally update the actuator if needed.
+
+This means the controller is always in sync with the sensors. Add a sensor → run `/loop-setup` → controller is updated.
+
+### 5.3 `/loop` — Run the Loop
+
+**Purpose:** Start or resume the AI loop in the current project.
+
+**Preconditions:** Concrete agents must exist in `.claude/agents/` (created by `/loop-init` or manually).
+
+**Behavior:**
+
+1. Validates that sensor agents exist in `.claude/agents/loop-sensor-*.md`.
+2. Validates that `loop-controller.md` and `loop-actuator.md` exist.
+3. If `.ai-loop/orchestrator-output.md` exists with `status: running`, resumes from the current iteration.
+4. Otherwise, captures the task from conversation, starts from iteration 0 (initial measurement).
+5. Runs the iteration cycle described in Section 4.4 until termination.
+6. Reports the final result to the user.
+
+### 5.4 `/loop-status` — Inspect Current State
+
+**Purpose:** Show the current loop state without running an iteration.
+
+**Behavior:**
+
+1. Reads `.ai-loop/orchestrator-output.md` and displays the current iteration, status, and history.
+2. Reads the latest sensor output files and `controller-output.md` to summarize the current situation.
+3. Shows git log for the `.ai-loop/` directory to display the iteration timeline.
 
 ---
 
-## 4. Sequential Flow — One Full Loop Execution
+## 6. Project Customization
 
-At startup, there is no previous `sensor-output.md`. The very first thing the loop does is run the sensor to establish the initial state (iteration 0 is just a measurement). Then the normal cycle begins.
+Sensors are always project-specific. The controller is generated but editable. `/loop-setup` is the sync mechanism.
+
+### 6.1 Adding Sensors
+
+To add a new sensor:
+
+1. Create `.claude/agents/loop-sensor-{name}.md` (manually or by copying an existing sensor and modifying it).
+2. Define the measurement command and output format.
+3. Run `/loop-setup` to regenerate the controller with knowledge of the new sensor.
+
+The sensor template (`templates/sensor.md`) provides the structure. The user fills in the specifics.
+
+### 6.2 Editing the Controller
+
+`/loop-setup` generates the controller, but the generated file is a regular agent file that can be edited. Common customizations:
+
+- **Priority ordering**: Change which sensors are addressed first when multiple targets are unmet.
+- **Decision strategy**: Adjust how sensor results are combined (e.g., address compilation before tests, or require all targets to be met simultaneously).
+- **Stagnation detection**: Add instructions for recognizing when the loop is stuck and should try a different approach.
+
+After manual edits, running `/loop-setup` again will **overwrite** the controller. If custom logic is needed permanently, either avoid re-running `/loop-setup` or add the customization to the template.
+
+### 6.3 Editing the Actuator
+
+The actuator is created once by `/loop-init` and not regenerated by `/loop-setup`. Projects can freely customize it:
+
+- **Code style enforcement**: Add instructions to run a formatter after making changes.
+- **Scope constraints**: Limit which files or directories the actuator may modify.
+- **Testing requirements**: Instruct the actuator to write tests alongside fixes.
+
+### 6.4 Controller Strategies
+
+The controller agent's behavior can be further customized by editing its decision protocol. For example:
+
+```markdown
+## Decision Protocol
+
+When multiple errors exist, prioritize in this order:
+1. Compilation errors
+2. Type errors
+3. Test failures
+4. Lint warnings
+
+If the same error persists for 3 iterations, instruct the actuator to try
+a fundamentally different approach rather than incremental fixes.
+```
+
+For deeper customization (e.g., PID-like error tracking, adaptive strategies), edit `loop-controller.md` directly.
+
+---
+
+## 7. Iteration Lifecycle
+
+This section maps the abstract lifecycle from the [architecture](loop-architecture.md) to concrete Claude Code operations.
+
+### 7.1 Initial Measurement (Iteration 0)
+
+```
+User types /loop, describes the task
+  → Skill activates: orchestrator instructions loaded into main context
+  → Orchestrator captures task description in orchestrator-output.md
+  → Orchestrator spawns ALL sensor agents in PARALLEL via Task tool
+    → sensor-compilation runs javac, writes sensor-compilation-output.md
+    → sensor-tests runs mvn test, writes sensor-tests-output.md
+    → (all sensors run simultaneously)
+  → Orchestrator commits .ai-loop/ ("ai-loop: iteration 0 — initial measurement")
+```
+
+### 7.2 Normal Iteration
+
+```
+Orchestrator reads all sensor-{name}-output.md files
+  → Updates orchestrator-output.md
+  → Checks iteration < max-iterations
+  → Spawns controller agent via Task tool
+    → Controller reads sensor outputs + orchestrator-output.md + git history
+    → Controller writes controller-output.md
+  → Orchestrator reads controller-output.md
+  → If target-met: true → finalize, commit, stop
+  → Spawns actuator agent via Task tool
+    → Actuator reads controller-output.md + codebase
+    → Actuator modifies code, writes actuator-output.md
+  → Spawns ALL sensor agents in PARALLEL via Task tool
+    → Each sensor runs its command, writes its output file
+    → (all sensors run simultaneously)
+  → Orchestrator commits all changes
+    ("ai-loop: iteration N — {summary}")
+```
+
+### 7.3 Termination
+
+```
+target-met: true
+  → Orchestrator writes orchestrator-output.md (status: complete)
+  → Commits final state
+  → Reports success to user
+
+iteration >= max-iterations
+  → Orchestrator writes orchestrator-output.md (status: max-iterations-reached)
+  → Commits final state
+  → Reports failure to user with summary of progress
+```
+
+### 7.4 Flow Diagram
 
 ```mermaid
 flowchart TD
-    START([Loop Start]) --> INIT["Read task.md"]
-    INIT --> SENSE_INIT["Initial sensor run\n→ write sensor-output.md"]
-    SENSE_INIT --> COMMIT_INIT["Orchestrator: commit\n(initial measurement)"]
+    START(["/loop"]) --> CAPTURE["Capture task from conversation\n→ write orchestrator-output.md"]
+    CAPTURE --> SENSE_INIT["Task tool → ALL sensor agents IN PARALLEL\n→ each writes sensor-{name}-output.md"]
+    SENSE_INIT --> COMMIT_INIT["git commit\n(initial measurement)"]
 
     COMMIT_INIT --> ORCH
 
     subgraph "Iteration"
-        ORCH["Orchestrator:\nread sensor-output.md\n→ write orchestrator-output.md"]
+        ORCH["Orchestrator:\nread all sensor-{name}-output.md\n→ update orchestrator-output.md"]
         ORCH --> MAX{"iteration >= max?"}
-        MAX -- "Yes" --> FAIL(["Orchestrator:\nstatus: max iterations\n+ commit"])
-        MAX -- "No" --> CTRL["Controller:\nread task.md + sensor-output.md\n+ git history\n→ write controller-output.md"]
+        MAX -- "Yes" --> FAIL(["status: max-iterations-reached\n+ git commit"])
+        MAX -- "No" --> CTRL["Task tool → controller agent\n→ writes controller-output.md"]
         CTRL --> CHECK{"target-met?"}
-        CHECK -- "Yes" --> DONE(["Orchestrator:\nstatus: complete\n+ commit"])
-        CHECK -- "No" --> ACT["Actuator:\nread controller-output.md\n→ modify code\n+ write actuator-output.md"]
-        ACT --> SENSE["Sensor: run command\n→ overwrite sensor-output.md"]
-        SENSE --> COMMIT["Orchestrator: commit\n(code + all output files)"]
+        CHECK -- "Yes" --> DONE(["status: complete\n+ git commit"])
+        CHECK -- "No" --> ACT["Task tool → actuator agent\n→ modifies code\n+ writes actuator-output.md"]
+        ACT --> SENSE["Task tool → ALL sensor agents IN PARALLEL\n→ each writes sensor-{name}-output.md"]
+        SENSE --> COMMIT["git commit\n(code + all .ai-loop/ artifacts)"]
     end
 
     COMMIT --> ORCH
@@ -374,142 +582,55 @@ flowchart TD
 
 ---
 
-## 5. Single Iteration — Artifact Flow
+## 8. Dependency Graph
 
-This shows what each component reads and writes within one iteration (after the initial sensor measurement):
+Within a single iteration, sensors run in parallel, then controller, then actuator, then sensors again in parallel.
 
 ```mermaid
 flowchart LR
-    subgraph "State at start of iteration (from previous commit)"
-        TASK["task.md"]
+    subgraph Inputs["Inputs"]
+        direction TB
         GIT["Git history"]
         CODE["Codebase"]
-        SO_PREV["sensor-output.md\n(from previous iteration)"]
+        SO_PREV["sensor-{name}-output.md\n(from previous commit)\n× N sensors"]
     end
 
-    subgraph "Step 1: Orchestrate"
-        ORCH["Orchestrator\nchecks status, prepares iteration"]
+    subgraph Agents["Agents (via Task tool)"]
+        direction TB
+        SENSORS["4. Sensor agents\n(parallel)"]
+        ACT["3. Actuator agent"]
+        CTRL["2. Controller agent"]
+        ORCH["1. Orchestrator\n(main context)"]
     end
 
-    subgraph "Step 2: Control"
-        CTRL["Controller\njudges target\nwrites instructions"]
+    subgraph Outputs["Artifacts in .ai-loop/"]
+        direction TB
+        OBS["sensor-{name}-output.md\n(new) × N sensors"]
+        AR["actuator-output.md"]
+        DEC["controller-output.md"]
+        LS["orchestrator-output.md"]
     end
 
-    subgraph "Step 3: Actuate"
-        ACT["Actuator\napplies changes"]
-    end
+    SO_PREV --> ORCH
+    ORCH --> LS
 
-    subgraph "Step 4: Sense"
-        SENSOR["Sensor\nmeasures new state"]
-    end
+    SO_PREV --> CTRL
+    LS --> CTRL
+    GIT --> CTRL
+    CTRL --> DEC
 
-    subgraph "Step 5: Commit"
-        COMMIT["Orchestrator\ngit commit\n(code + all output files)"]
-    end
+    DEC --> ACT
+    CODE --> ACT
+    ACT --> AR
+    ACT -.->|"modifies"| CODE
 
-    subgraph "Output Files (overwritten)"
-        OO["orchestrator-output.md"]
-        CO["controller-output.md"]
-        AO["actuator-output.md"]
-        SO["sensor-output.md\n(new measurement)"]
-    end
-
-    SO_PREV -->|"reads"| ORCH
-    TASK -->|"reads"| ORCH
-    ORCH -->|"writes"| OO
-
-    TASK -->|"reads"| CTRL
-    SO_PREV -->|"reads"| CTRL
-    GIT -->|"reads history"| CTRL
-    CTRL -->|"writes"| CO
-
-    CO -->|"reads"| ACT
-    CODE -->|"current state"| ACT
-    ACT -->|"modifies"| CODE
-    ACT -->|"writes"| AO
-
-    TASK -->|"command def"| SENSOR
-    CODE -->|"new state"| SENSOR
-    SENSOR -->|"writes"| SO
-
-    SO --> COMMIT
-    AO --> COMMIT
-    CO --> COMMIT
-    OO --> COMMIT
-    CODE --> COMMIT
+    CODE --> SENSORS
+    SENSORS --> OBS
 ```
 
----
-
-## 6. Walkthrough — Factorial Example
-
-### Initial measurement (before iteration 1)
-
-| Step | What happens | Output file |
-|---|---|---|
-| **Sensor** | Runs `javac src/**/*.java` — no files exist. Captures error output. | `sensor-output.md`: compiler "file not found" logs |
-| **Orchestrator** | Commits `sensor-output.md` as initial baseline. | Git commit (initial measurement) |
-
-This establishes the baseline.
-
-### Iteration 1
-
-| Step | What happens | Output file |
-|---|---|---|
-| **Orchestrator** | Reads `sensor-output.md` (errors). First iteration, loop not done. | `orchestrator-output.md`: `status: running`, iteration 1 starting |
-| **Controller** | Reads task.md (target: "no errors") + sensor output (errors). Target not met. Decides: create the file. | `controller-output.md`: `target-met: false`, instructions to create Factorial.java |
-| **Actuator** | Reads controller instructions. Writes `Factorial.java`. | `actuator-output.md`: summary of what was created |
-| **Sensor** | Runs `javac src/**/*.java` → 2 errors (missing return type, unclosed brace). | `sensor-output.md`: javac error output (overwrites) |
-| **Orchestrator** | Commits everything (Factorial.java + all output files). | Git commit (end of iteration 1) |
-
-### Iteration 2
-
-| Step | What happens | Output file |
-|---|---|---|
-| **Orchestrator** | Reads `sensor-output.md` (2 errors). Iteration 2 < max 10 → continue. | `orchestrator-output.md`: `status: running` (overwrites) |
-| **Controller** | Reads sensor output + git history. Still errors → target not met. Produces fix instructions. | `controller-output.md`: `target-met: false`, fix instructions (overwrites) |
-| **Actuator** | Reads controller instructions. Fixes both issues. | `actuator-output.md`: summary of fixes (overwrites) |
-| **Sensor** | Runs `javac src/**/*.java` → 0 errors. | `sensor-output.md`: clean compilation output (overwrites) |
-| **Orchestrator** | Commits everything (fixed code + all output files). | Git commit (end of iteration 2) |
-
-### Iteration 3
-
-| Step | What happens | Output file |
-|---|---|---|
-| **Orchestrator** | Reads `sensor-output.md` (clean). | `orchestrator-output.md`: `status: running` (overwrites) |
-| **Controller** | Reads sensor output. No errors → target "no errors" is met. | `controller-output.md`: `target-met: true` (overwrites) |
-| **Orchestrator** | Reads `target-met: true` → loop ends. Writes final status. Commits. | `orchestrator-output.md`: `status: complete` (overwrites) + git commit |
-
-Note: when the controller says `target-met: true`, the orchestrator skips actuation and sensor, and ends the loop.
-
----
-
-## 7. Artifact Dependency Summary
-
-| File | Written by | Read by |
-|---|---|---|
-| `task.md` | User (before loop) | Sensor, Controller, Orchestrator |
-| `sensor-output.md` | Sensor | Controller |
-| `controller-output.md` | Controller | Actuator, Orchestrator |
-| `actuator-output.md` | Actuator | Orchestrator |
-| `orchestrator-output.md` | Orchestrator | All components (shared registry: iteration number, status, history) |
-| Codebase (working tree) | Actuator (modifies) | Sensor, Actuator |
-| Git commits | Orchestrator (commits at end of iteration) | Controller (history) |
-
----
-
-## 8. Independence Guarantees
-
-Each component can be implemented and tested in isolation:
-
-| Component | Needs | Does NOT need |
-|---|---|---|
-| **Sensor** | The codebase + a command from task.md | Task description, controller logic, history |
-| **Controller** | task.md + sensor-output.md + git history | Access to codebase, ability to run tools |
-| **Actuator** | controller-output.md + current codebase | Sensor output, target judgment, history |
-| **Orchestrator** | task.md + controller-output.md + actuator-output.md | Implementation details of any component |
-
-Swappable:
-- Sensor: `javac` → `gcc` → `tsc` → any tool that produces output
-- Controller: simple heuristic → PID-inspired → full LLM reasoning
-- Actuator: Claude → GPT → human developer following the controller's instructions
+| Agent | Claude Code construct | Spawned by | Inputs | Output |
+|---|---|---|---|---|
+| **Orchestrator** | `/loop` skill (main context) | User | `sensor-{name}-output.md` × N | `orchestrator-output.md`, git commits |
+| **Controller** | `.claude/agents/loop-controller.md` (Task tool) | Orchestrator | `sensor-{name}-output.md` × N, `orchestrator-output.md`, git history | `controller-output.md` |
+| **Actuator** | `.claude/agents/loop-actuator.md` (Task tool) | Orchestrator | `controller-output.md`, codebase | `actuator-output.md`, code changes |
+| **Sensors** | `.claude/agents/loop-sensor-{name}.md` (Task tool, parallel) | Orchestrator | codebase | `sensor-{name}-output.md` |
