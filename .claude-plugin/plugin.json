@@ -1,0 +1,5 @@
+{
+  "name": "ai-loops",
+  "description": "Closed-loop control system for agentic coding sessions. Provides sensor-controller-actuator feedback loops that drive code toward a target state.",
+  "version": "0.1.0"
+}
