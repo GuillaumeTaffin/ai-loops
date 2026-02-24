@@ -61,11 +61,10 @@ When the loop finishes (target met or max iterations), report to the user:
    ```
    Include the task description in the body. **No history section** — Git is the history.
 
-3. Spawn **all sensor agents in parallel** using the Task tool. For each sensor file found in `.claude/agents/loop-sensor-*.md`:
-   - Use `subagent_type: "Bash"` (sensors need to run commands)
-   - Use `model: "haiku"` (sensors are lightweight — run a command, format the output)
-   - In the prompt, include the full content of the sensor agent file as instructions
-   - Tell the agent to run its measurement and write its output file
+3. Spawn **all sensor agents in parallel** using the Task tool. For each sensor file found in `.claude/agents/loop-sensor-{name}.md`:
+   - Use `subagent_type: "loop-sensor-{name}"` (matches the agent's `name` frontmatter field)
+   - The agent file's frontmatter defines its `tools`, `model`, and constraints — no need to override
+   - In the prompt, tell the agent to run its measurement and write its output file
 
    **All sensors must be spawned in the same message** so they run in parallel.
 
@@ -89,10 +88,9 @@ If `iteration >= max-iterations`:
 #### C. Spawn controller
 
 Spawn the controller agent using the Task tool:
-- Use `subagent_type: "Bash"` (controller needs git access)
-- Use `model: "opus"` (controller needs strong reasoning for gap analysis and strategic planning)
-- In the prompt, include the full content of `.claude/agents/loop-controller.md` as instructions
-- Tell it to read the sensor outputs and orchestrator state, then write `.ai-loop/controller-output.md`
+- Use `subagent_type: "loop-controller"`
+- The agent file's frontmatter defines its `tools` (Read, Glob, Grep, Bash, Write), `model` (opus), and constraints
+- In the prompt, tell it to read the sensor outputs and orchestrator state, then write `.ai-loop/controller-output.md`
 
 #### D. Check target-met
 
@@ -106,11 +104,9 @@ If `target-met: true`:
 #### E. Spawn actuator
 
 Spawn the actuator agent using the Task tool:
-- Use `subagent_type: "general-purpose"` (actuator needs file editing tools)
-- Use `model: "sonnet"` (actuator needs solid coding ability, Sonnet is the best balance of speed and quality for implementation)
-- In the prompt, include the full content of `.claude/agents/loop-actuator.md` as instructions
-- Tell it to read `.ai-loop/controller-output.md` and apply the corrective **file changes**
-- **Remind it explicitly: do NOT run any commands (no Bash). Only modify files. The sensors will measure the result.**
+- Use `subagent_type: "loop-actuator"`
+- The agent file's frontmatter defines its `tools` (Read, Edit, Write, Glob, Grep — no Bash), `model` (sonnet), and constraints
+- In the prompt, tell it to read `.ai-loop/controller-output.md` and apply the corrective **file changes**
 
 #### F. Spawn sensors (re-measure)
 

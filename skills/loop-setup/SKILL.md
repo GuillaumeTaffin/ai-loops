@@ -10,11 +10,13 @@ It handles everything: first-time scaffolding, adding/removing sensors, and refr
 
 ## Agent Templates
 
-These template files define the structure, rules, and behavior contracts for each agent type. Read them when generating or refreshing agent files:
+These template files define the structure, rules, behavior contracts, **and frontmatter** for each agent type. Read them when generating or refreshing agent files:
 
 - [sensor-template.md](sensor-template.md) — structure for sensor agents (one per sensor)
 - [controller-template.md](controller-template.md) — structure for the controller agent
 - [actuator-template.md](actuator-template.md) — structure for the actuator agent
+
+Each template includes a **YAML frontmatter** with `name`, `description`, `tools`, `disallowedTools`, and `model`. When generating the concrete agent files, preserve the frontmatter exactly — it controls tool access and model selection at the infrastructure level.
 
 ## Procedure
 
