@@ -1,0 +1,17 @@
+{
+  "name": "ai-loops",
+  "description": "Marketplace for the ai-loops plugin: a closed-loop control system for agentic coding sessions.",
+  "owner": {
+    "name": "GuillaumeTaffin"
+  },
+  "plugins": [
+    {
+      "name": "ai-loops",
+      "description": "Closed-loop control system for agentic coding sessions. Provides sensor-controller-actuator feedback loops that drive code toward a target state.",
+      "version": "0.1.0",
+      "source": ".",
+      "category": "development",
+      "keywords": ["control-loop", "feedback", "agentic", "automation"]
+    }
+  ]
+}
