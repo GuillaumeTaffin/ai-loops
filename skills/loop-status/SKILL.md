@@ -10,7 +10,7 @@ You are running the `/loop-status` skill. Your job is to show the user the curre
 
 ### Step 1: Check if a loop exists
 
-Check for `.ai-loop/orchestrator-output.md`. If it does not exist, tell the user no loop is currently active and suggest running `/loop-init` then `/loop`.
+Check for `.ai-loop/orchestrator-output.md`. If it does not exist, tell the user no loop is currently active and suggest running `/loop-setup` then `/loop`.
 
 ### Step 2: Read loop state
 
@@ -18,8 +18,8 @@ Read `.ai-loop/orchestrator-output.md` and display:
 - Current iteration number
 - Loop status (running, complete, max-iterations-reached)
 - Max iterations setting
+- Branch name (`branch`) and base branch (`base-branch`)
 - The task description
-- Iteration history
 
 ### Step 3: Read latest artifacts
 
@@ -36,6 +36,7 @@ Run `git log --oneline .ai-loop/` to show the iteration commit history.
 
 Present a clear, concise summary:
 - **Status**: running / complete / max-iterations-reached / not started
+- **Branch**: `ai-loop/{slug}` (from `base-branch`)
 - **Iteration**: N of max
 - **Last sensor readings**: brief summary of each sensor
 - **Last controller decision**: target-met? key findings
