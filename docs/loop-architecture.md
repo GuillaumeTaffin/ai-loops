@@ -10,6 +10,8 @@ It is deliberately **implementation-agnostic**. It does not prescribe how artifa
 
 - [Conceptual Framework](concept-control-loop-framework.md) — the control theory foundations: why feedback loops work, what P/PI/PID/Adaptive strategies mean, stability, convergence, and advanced parallels.
 - [Detailed Design](loop-detailed-design.md) — a concrete implementation of this architecture as a Claude Code plugin, with skills, custom agents, file-based artifacts, and git as the timeline.
+- [Hierarchical Loops](hierarchical-loops-design.md) — extending the architecture to support hierarchical control loops where an inner loop acts as a composite actuator for an outer loop.
+- [Use Case: Hierarchical TDD Delivery](use-case-hierarchical-tdd.md) — concrete validation of the hierarchical model against a multi-scenario TDD delivery workflow.
 
 ---
 
