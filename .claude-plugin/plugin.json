@@ -1,5 +1,5 @@
 {
   "name": "ai-loops",
-  "description": "Closed-loop control system for agentic coding sessions. Provides sensor-controller-actuator feedback loops that drive code toward a target state.",
-  "version": "0.1.0"
+  "description": "Hierarchical closed-loop control system for agentic coding sessions. Provides recursive sensor-controller-actuator feedback loops with flow.yaml configuration, setpoint propagation, and run-based artifacts.",
+  "version": "0.2.0"
 }

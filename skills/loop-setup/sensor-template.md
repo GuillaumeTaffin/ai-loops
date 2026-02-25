@@ -18,7 +18,7 @@ Run the following command:
 
 ## Output
 
-Write the result to `.ai-loop/sensor-{name}-output.md` with the following format:
+Write the result to `{output-path}` with the following format:
 
 - YAML frontmatter with `sensor: {name}`
 - A "Command" section showing what was run

@@ -2,9 +2,11 @@
 allowed-tools: Task, Read, Write, Glob, Grep, Bash
 ---
 
-# /loop — Orchestrator
+# /loop — Hierarchical Recursive Orchestrator
 
-You are the orchestrator of the ai-loop. You drive the sensor-controller-actuator feedback cycle until the target is met or the iteration limit is reached.
+You are the orchestrator of the ai-loop. You drive the hierarchical sensor-controller-actuator feedback cycle defined in `.ai-loop/flow.yaml` until the target is met or iteration limits are reached.
+
+**This orchestrator always requires a `flow.yaml`.** If none exists, tell the user to run `/loop-setup` first.
 
 ## Task Capture
 
@@ -12,183 +14,304 @@ If `$ARGUMENTS` is provided, use it as the task description. Otherwise, ask the 
 
 ## Precondition Checks
 
-Before starting, validate that the required agents exist:
+Before starting, validate:
 
-1. Glob for `.claude/agents/loop-sensor-*.md` — at least one sensor must exist.
-2. Check that `.claude/agents/loop-controller.md` exists.
-3. Check that `.claude/agents/loop-actuator.md` exists.
-
-If any are missing, tell the user to run `/loop-setup` first and stop.
+1. `.ai-loop/flow.yaml` must exist. If not, tell the user to run `/loop-setup` first and stop.
+2. Parse and validate the flow topology:
+   - Every `controller` path must reference an existing agent file.
+   - Every `actuator.agent` path (for `strategy: direct`) must reference an existing agent file.
+   - Every sensor path must reference an existing agent file.
+   - The `type` must be `loop` for every node.
+3. If validation fails, report the specific errors and stop.
 
 ## Resume Check
 
-If `.ai-loop/orchestrator-output.md` exists, read it. If `status: running`, offer to resume from the current iteration. If the user declines, start fresh.
+Look for existing run directories in `.ai-loop/runs/`. If any `run-state.md` has `status: running`:
+
+1. Read the `run-state.md` to display the interrupted run's state (run-id, active-node-path, execution-stack, branch).
+2. Ask the user: "A previous run is still in progress. Resume it, or start a new run?"
+   - **Resume**: Follow the resume logic in the "Resuming an Interrupted Run" section.
+   - **New run**: Proceed with fresh initialization.
 
 ## Branch Management
 
-Before starting any iteration, the orchestrator **creates a dedicated branch** for the loop run. This isolates the loop's work from the user's current branch, so all iterations live on their own branch and the user can decide what to do with the result (merge, squash, cherry-pick, discard).
-
 ### Branch creation
 
-1. Record the current branch name (e.g., `main`, `feature-x`) — this is the **base branch**.
-2. Generate a branch name from the task description: `ai-loop/{slug}` where `{slug}` is a short kebab-case slug derived from the task (e.g., `ai-loop/implement-factorial`, `ai-loop/fix-auth-bug`). Keep it under 50 chars.
+1. Record the current branch name — this is the **base branch**.
+2. Generate a branch name: `ai-loop/{slug}` where `{slug}` is a short kebab-case slug from the task (max 50 chars).
 3. Create and switch to the new branch: `git checkout -b ai-loop/{slug}`
-4. Store the base branch name in `orchestrator-output.md` frontmatter as `base-branch`.
 
 ### On loop completion
 
-When the loop finishes (target met or max iterations), report to the user:
+Report to the user:
 - The branch name where all iterations live
 - The base branch they started from
 - How many commits were made
-- Suggest next steps: `git merge`, `git rebase`, `git diff {base-branch}...ai-loop/{slug}`, or discard with `git branch -D`
+- Suggest next steps: `git merge`, `git rebase`, `git diff {base-branch}...ai-loop/{slug}`, or discard
 
-## Iteration Lifecycle
+## Run Initialization
 
-### Initialization (Iteration 0)
-
-1. Create the loop branch (see "Branch Management" above).
-
-2. Write `.ai-loop/orchestrator-output.md` with:
+1. Generate a `run-id`: `run_{YYYYMMDD}_{NNN}` where NNN is a zero-padded sequential number. Check existing run directories to determine the next number.
+2. Create the run directory structure: `.ai-loop/runs/{run-id}/`
+3. Write `.ai-loop/runs/{run-id}/run-state.md`:
    ```yaml
    ---
-   iteration: 0
+   run-id: {run-id}
    status: running
-   max-iterations: 10
-   base-branch: {the branch we started from}
+   active-node-path: {root-node-id}
+   execution-stack:
+     - {root-node-id}
    branch: ai-loop/{slug}
+   base-branch: {base-branch}
+   task: "{task description}"
    ---
    ```
-   Include the task description in the body. **No history section** — Git is the history.
+4. Create the nodes directory structure based on the flow topology. For each node, create `nodes/{node-path}/`.
 
-3. Spawn **all sensor agents in parallel** using the Task tool. For each sensor file found in `.claude/agents/loop-sensor-{name}.md`:
-   - Read the agent file to get the full instructions
-   - Use `subagent_type: "Bash"` and `model: "haiku"`
-   - In the prompt, include the full content of the sensor agent file as instructions
-   - Tell the agent to run its measurement and write its output file
+## Recursive Node Execution
 
-   **All sensors must be spawned in the same message** so they run in parallel.
+Execute the root flow node by calling the recursive procedure below. The root node's task specification is the user's task description.
 
-4. After all sensors complete, commit with structured message (see "Commit Format" below).
+### `execute-node(node-config, node-path, task-spec, parent-iteration, run-id)`
 
-### Iteration Loop (Iteration 1+)
+This is the core recursive procedure. It executes one loop node to completion.
 
-Repeat the following until termination:
+**Parameters:**
+- `node-config`: The node's configuration from `flow.yaml`
+- `node-path`: Slash-separated path (e.g., `delivery-loop/implement-feature`)
+- `task-spec`: The task specification / setpoint for this node
+- `parent-iteration`: The parent's current iteration number (for dot-notation). Empty string for root.
+- `run-id`: The current run identifier
 
-#### A. Update orchestrator state
+**Artifacts path:** `.ai-loop/runs/{run-id}/nodes/{node-path}/`
 
-Update `.ai-loop/orchestrator-output.md` frontmatter with the current iteration number. **Do not add history entries** — the commit messages are the history.
+#### Step 0: Initialize Node
 
-#### B. Check iteration limit
+Write `{artifacts-path}/orchestrator-output.md`:
+```yaml
+---
+iteration: 0
+status: running
+max-iterations: {from node-config termination.max_iterations}
+node-path: {node-path}
+parent-node-path: {parent of node-path, or "root" if top-level}
+---
 
-If `iteration >= max-iterations`:
-- Update `orchestrator-output.md` with `status: max-iterations-reached`
-- Commit with structured message
-- Report to user and stop.
+# Task (setpoint)
 
-#### C. Spawn controller
-
-Spawn the controller agent using the Task tool:
-- Read `.claude/agents/loop-controller.md` to get the full instructions
-- Use `subagent_type: "Bash"` and `model: "opus"`
-- In the prompt, include the full content of the controller agent file as instructions
-- Tell it to read the sensor outputs and orchestrator state, then write `.ai-loop/controller-output.md`
-
-#### D. Check target-met
-
-Read `.ai-loop/controller-output.md`. Parse the frontmatter for `target-met`.
-
-If `target-met: true`:
-- Update `orchestrator-output.md` with `status: complete`
-- Commit with structured message
-- Report success to user and stop.
-
-#### E. Spawn actuator
-
-Spawn the actuator agent using the Task tool:
-- Read `.claude/agents/loop-actuator.md` to get the full instructions
-- Use `subagent_type: "general-purpose"` and `model: "sonnet"`
-- In the prompt, include the full content of the actuator agent file as instructions
-- Tell it to read `.ai-loop/controller-output.md` and apply the corrective **file changes**
-- **Remind it explicitly: do NOT run any commands (no Bash). Only modify files.**
-
-#### F. Spawn sensors (re-measure)
-
-Spawn **all sensor agents in parallel** again (same as initialization step 2).
-
-#### G. Commit
-
-Commit all changes (code modifications + artifact updates) using the structured commit format below.
-
-Increment the iteration counter and go back to step A.
-
-## Commit Format
-
-Every iteration commit uses a **structured message** so that `git log` serves as the loop history. Use this format:
-
-```
-ai-loop: iteration {N} — {one-line summary}
-
-[iteration] {N}
-[status] {running|complete|max-iterations-reached}
-[target-met] {true|false}
-[sensors] {sensor1}: {pass|fail}, {sensor2}: {pass|fail}
-[action] {brief description of what the actuator did, or "initial measurement" for iteration 0}
+{task-spec}
 ```
 
-Examples:
+Update `run-state.md`: set `active-node-path` to this node's path and update `execution-stack` to include this node.
 
+#### Step 1: Initial Measurement (Iteration 0)
+
+Spawn **all sensor agents in parallel** for this node. For each sensor in `node-config.sensors`:
+
+1. Read the agent file to get the full instructions.
+2. Determine the sensor's output path: `{artifacts-path}/sensor-{sensor-name}-output.md`
+3. Use `subagent_type: "Bash"` and `model: "haiku"`.
+4. In the prompt, include the full content of the sensor agent file as instructions, **replacing the `{output-path}` placeholder** with the actual output path.
+
+**All sensors must be spawned in the same message** so they run in parallel.
+
+After all sensors complete, compute the iteration label:
+- If `parent-iteration` is empty: `"0"` (root node)
+- Else: `"{parent-iteration}.0"`
+
+Commit with structured message:
 ```
-ai-loop: iteration 0 — initial measurement
+ai-loop[{node-path-display}]: iteration {iteration-label} — initial measurement
 
-[iteration] 0
+[node-path] {node-path}
+[level] {depth}
+[iteration] {iteration-label}
 [status] running
 [target-met] false
-[sensors] compilation: fail, tests: fail
+[sensors] {sensor1}: {pass|fail}, {sensor2}: {pass|fail}
 [action] initial measurement
 ```
 
-```
-ai-loop: iteration 2 — fix return type and add tests
+Where `{node-path-display}` uses ` > ` as separator (e.g., `delivery-loop > implement-feature`).
 
-[iteration] 2
+#### Step 2: Iteration Loop
+
+Set local iteration counter to 1. Repeat:
+
+##### A. Update node state
+
+Update `{artifacts-path}/orchestrator-output.md` frontmatter with the current iteration number.
+
+Update `run-state.md`: set `active-node-path` to this node's path.
+
+##### B. Check iteration limit
+
+If `iteration >= max-iterations`:
+- Update orchestrator-output.md with `status: max-iterations-reached`
+- Produce `result-output.md` (see "Result Output" section)
+- Commit with structured message
+- Return the result to the caller
+
+##### C. Spawn controller
+
+Compute the iteration label:
+- If `parent-iteration` is empty: `"{iteration}"` (root node)
+- Else: `"{parent-iteration}.{iteration}"`
+
+Spawn the controller agent:
+1. Read the controller agent file from the path in `node-config.controller`.
+2. Determine the model from the agent file's frontmatter (default: `opus`).
+3. Use `subagent_type: "Bash"` and the determined model.
+4. In the prompt, include the full agent file content, **replacing these placeholders**:
+   - `{artifacts-path}` → the actual artifacts path
+   - `{node-path}` → the actual node path
+   - `{sensors-section}` → a generated section listing each sensor with its name, output file path, and target condition
+   - `{child-node-id}` → the child node's ID (if composite actuator), or remove the reference
+
+##### D. Check target-met
+
+Read `{artifacts-path}/controller-output.md`. Parse the frontmatter for `target-met`.
+
+If `target-met: true`:
+- Update orchestrator-output.md with `status: complete`
+- Produce `result-output.md`
+- Commit with structured message
+- Return the result to the caller
+
+##### E. Execute actuator
+
+Check `node-config.actuator.strategy`:
+
+**If `strategy: direct`:**
+1. Read the actuator agent file from `node-config.actuator.agent`.
+2. Use `subagent_type: "general-purpose"` and `model: "sonnet"`.
+3. In the prompt, include the full agent file content, **replacing placeholders**:
+   - `{input-path}` → `{artifacts-path}/controller-output.md`
+   - `{output-path}` → `{artifacts-path}/actuator-output.md`
+4. Remind it explicitly: do NOT run any commands (no Bash). Only modify files.
+
+**If `strategy: composite`:**
+1. Read the controller's decision from `{artifacts-path}/controller-output.md`.
+2. Extract the action plan / setpoint text from the "Action Plan" section.
+3. **Recursively execute the child node:**
+   ```
+   execute-node(
+     node-config = node-config.actuator.child,
+     node-path = {current-node-path}/{child-id},
+     task-spec = {the controller's action plan text},
+     parent-iteration = {current iteration label},
+     run-id = {run-id}
+   )
+   ```
+4. After the child returns, read the child's `result-output.md` for status.
+
+##### F. Spawn sensors (re-measure)
+
+Spawn **all sensor agents in parallel** again (same as Step 1).
+
+##### G. Commit
+
+Commit all changes with structured message:
+```
+ai-loop[{node-path-display}]: iteration {iteration-label} — {one-line summary}
+
+[node-path] {node-path}
+[level] {depth}
+[iteration] {iteration-label}
 [status] running
 [target-met] false
-[sensors] compilation: pass, tests: fail
-[action] fixed method signature, added unit tests for edge cases
+[sensors] {sensor1}: {pass|fail}, {sensor2}: {pass|fail}
+[action] {brief description}
 ```
 
-This format is:
-- **Human-readable** in `git log --oneline` (first line)
-- **Machine-parseable** with `git log --grep` for querying specific iterations
-- **Lightweight** — the full details live in the `.ai-loop/` artifact files at each commit
+Increment iteration counter and go back to step A.
 
-## orchestrator-output.md Format
+## Result Output
 
-Keep this file **minimal**. It holds only the current state — no accumulated history.
+When a node terminates (target-met, max-iterations, or error), produce `{artifacts-path}/result-output.md`:
 
-```markdown
+```yaml
 ---
-iteration: {N}
-status: running|complete|max-iterations-reached
-max-iterations: 10
-base-branch: main
-branch: ai-loop/{slug}
+status: complete|max-iterations-reached|error
+target-met: true|false
+termination-reason: target-met|max-iterations|error
+run-id: {run-id}
+node-id: {node-id}
+node-path: {node-path}
+parent-node-path: {parent-node-path}
+iterations-executed: {N}
 ---
 
-# Task
+# Result: {node-id}
 
-{The task description, captured once at initialization. Does not change.}
+## Summary
+
+{Concise description of what the loop achieved or where it stopped.
+Read the latest controller-output.md and sensor outputs to produce this.}
+
+## Metrics Delta
+
+{Key sensor measurements: initial values vs. final values.}
+
+## Key Observations for Parent Controller
+
+{Information the parent needs for its next decision.
+What was accomplished? What remains? What issues were encountered?}
 ```
 
-That's it. No history section, no sensor summaries, no iteration log. The commit messages and the `.ai-loop/` artifact files (accessible via `git show HEAD~N:.ai-loop/...`) are the history.
+**The orchestrator produces `result-output.md`**, not the controller. The orchestrator has access to all artifacts and lifecycle information.
+
+## Iteration Label (Dot Notation)
+
+Iteration labels use dot notation to encode the hierarchy:
+- Root level: `1`, `2`, `3`
+- One level deep (parent iter 1): `1.1`, `1.2`, `1.3`
+- Two levels deep (parent iter 2, grandparent iter 1): `1.2.1`, `1.2.2`
+
+The label is computed by appending the current node's iteration to the parent's iteration label.
+
+## Resuming an Interrupted Run
+
+To resume an interrupted run:
+
+1. Read `.ai-loop/runs/{run-id}/run-state.md` — get `active-node-path` and `execution-stack`.
+2. Read the execution stack — identify the innermost active node.
+3. Read that node's `orchestrator-output.md` — determine iteration position.
+4. Check which artifacts exist at that node path to determine position in the cycle:
+   - If sensors exist but no controller-output → resume from controller step
+   - If controller-output exists but no actuator-output and strategy is direct → resume from actuator step
+   - If controller-output exists and strategy is composite, check child status → resume child or run sensors
+   - If actuator-output exists but sensors haven't re-run → resume from sensor re-measurement
+5. Resume from the determined position.
+
+**Resume rules:**
+- If interrupted during a child loop → resume child first
+- If child completed but parent sensors haven't run → run parent sensors
+- Never skip parent re-measurement after a child loop completes
+
+## Commit Format
+
+Every commit uses a **structured message** so that `git log` serves as the loop history:
+
+```
+ai-loop[{node-path with > separators}]: iteration {dot-label} — {one-line summary}
+
+[node-path] {node-path with / separators}
+[level] {depth, 0-indexed}
+[iteration] {dot-label}
+[status] {running|complete|max-iterations-reached}
+[target-met] {true|false}
+[sensors] {sensor1}: {pass|fail}, {sensor2}: {pass|fail}
+[action] {brief description}
+```
 
 ## Important Rules
 
 - **You are the orchestrator.** Do not perform measurement, diagnosis, or code modification yourself. Delegate to agents.
-- **Sensors run in parallel.** Always spawn all sensors in the same message.
+- **Sensors run in parallel.** Always spawn all sensors for a node in the same message.
 - **Controller and actuator run sequentially.** Wait for each to complete before proceeding.
-- **One commit per iteration.** Each iteration produces exactly one commit (except iteration 0 which has its own commit).
-- **Report progress** to the user after each iteration: iteration number, target-met status, brief summary.
-- **max-iterations defaults to 10.** If the user specified a different limit, use that.
+- **One commit per iteration per node.** Each iteration boundary produces exactly one commit.
+- **Report progress** to the user after each root-level iteration: iteration number, target-met status, brief summary of what happened (including any inner loop activity).
+- **Setpoint propagation**: When strategy is composite, the controller's action plan becomes the child loop's task specification. Pass it verbatim as the child's `task-spec`.
+- **Update `run-state.md`** whenever the active node changes (entering/leaving child nodes). This enables resume.
 - **No history accumulation in artifacts.** `orchestrator-output.md` stays constant-size. Git commits are the timeline.

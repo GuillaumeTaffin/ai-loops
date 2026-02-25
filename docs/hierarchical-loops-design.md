@@ -87,9 +87,7 @@ Each outer iteration advances one sub-task, with feedback at every step. If iter
 
 ### 3.1 Configuration File
 
-The loop hierarchy is defined in `.ai-loop/flow.yaml`. This file is the **single source of truth** for the topology and node wiring.
-
-When no `flow.yaml` exists, the orchestrator runs in **flat mode** — identical to the current single-level behavior. Zero configuration change required for existing setups.
+The loop hierarchy is defined in `.ai-loop/flow.yaml`. This file is the **single source of truth** for the topology and node wiring. Every loop run requires a `flow.yaml` — the orchestrator will not start without one.
 
 ### 3.2 Schema
 
@@ -151,9 +149,9 @@ termination:
 
 The controller produces a decision, the actuator executes it, and the loop terminates after one iteration. No special node type needed.
 
-### 3.5 Flat Mode Compatibility
+### 3.5 Single-Level Flows
 
-When no `.ai-loop/flow.yaml` exists, the orchestrator uses the existing flat mode: sensor agents discovered from `.claude/agents/loop-sensor-*.md`, single controller, single actuator, artifacts in `.ai-loop/`. A flat loop is representable as a hierarchical flow with one `loop` node and a `direct` actuator — the flat mode is simply the default when no config is present.
+A single-level loop (the simplest case) is configured as a `flow.yaml` with one `loop` node and a `direct` actuator. This is the equivalent of the former flat mode, now expressed as a standard flow configuration.
 
 ---
 
@@ -219,20 +217,6 @@ iterations-executed: 4
 - **Failure details** — if status is `error`
 
 **Minimum parent-consumable fields:** `status`, `target-met`, and a concise summary. The parent controller reads this to decide its next action.
-
-### 4.3 Flat Mode Layout (Unchanged)
-
-Single-level loops keep the existing flat structure. No subdirectories, no run IDs, no topology file:
-
-```
-.ai-loop/
-  sensor-{name}-output.md
-  controller-output.md
-  actuator-output.md
-  orchestrator-output.md
-```
-
-This ensures full backward compatibility.
 
 ---
 
@@ -331,18 +315,6 @@ flowchart TD
 
     OUTER_COMMIT --> OUTER_ORCH
 ```
-
-### 5.5 Comparison with Flat Mode
-
-| Aspect | Flat mode | Hierarchical mode |
-|--------|-----------|-------------------|
-| Levels | 1 | N (recursive) |
-| Actuator step | Single actuator execution | Full inner loop to convergence (when composite) |
-| Sensors per outer iteration | All sensors, once | Outer sensors bracket the inner loop; inner sensors run each inner iteration |
-| Commits per outer iteration | 1 | 1 per inner iteration + 1 for outer boundary |
-| Config file | Not present | `.ai-loop/flow.yaml` |
-| Artifact layout | Flat `.ai-loop/` | `runs/{run-id}/nodes/{node-path}/` |
-| Setpoint | Task specification (constant) | Parent decision → child task spec (cascade) |
 
 ---
 
@@ -657,10 +629,10 @@ This section is intentionally implementation-oriented and guides changes to the 
 
 **Behavior:**
 
-- If `.ai-loop/flow.yaml` exists → execute hierarchical mode (recursive orchestration)
-- Otherwise → fallback to current flat mode (unchanged behavior)
+- Requires `.ai-loop/flow.yaml` — will not start without it.
+- Executes recursive orchestration based on the flow topology.
 
-**New responsibilities:**
+**Responsibilities:**
 - Parse and validate `flow.yaml`
 - Recursive node execution
 - Setpoint propagation (passing parent decision as child task spec)
@@ -687,20 +659,16 @@ This preserves the current plugin philosophy: the plugin scaffolds and refreshes
 - Render the execution tree with status per node
 - Show latest result per active/most recent node
 - Summarize last sensor/controller outputs for the selected node
-- In flat mode: existing behavior unchanged
 
 ---
 
-## 11. Migration Strategy
+## 11. Migration from Flat Mode
 
-To minimize disruption:
+Flat mode (no `flow.yaml`) is no longer supported. To migrate an existing flat setup:
 
-1. **Keep flat mode unchanged** when no `flow.yaml` exists
-2. **Introduce hierarchical mode** behind the presence of `.ai-loop/flow.yaml`
-3. **Evolve `/loop-status`** to read both flat and namespaced layouts
-4. **Later**: provide a migration helper that converts flat setup into a single-node flow
-
-A flat loop is representable as a hierarchical flow with one `loop` node and a `direct` actuator strategy — the two modes are structurally compatible.
+1. Run `/loop-setup` — it will detect existing sensor agents and guide the user through generating a `flow.yaml` configuration.
+2. A single-level flat loop maps to a 1-level flow with one `loop` node and a `direct` actuator strategy.
+3. The new run-based artifact layout (`runs/{run-id}/nodes/{node-path}/`) replaces the flat `.ai-loop/*.md` layout.
 
 ---
 
@@ -708,7 +676,7 @@ A flat loop is representable as a hierarchical flow with one `loop` node and a `
 
 ### 12.1 Functional Scenarios
 
-1. **Flat compatibility** — No `flow.yaml` → current `/loop` behavior unchanged
+1. **Single-level flow** — 1-node `flow.yaml` with direct actuator → simplest hierarchical case
 2. **Minimal nested loop** — Parent loop launches child loop → child converges → parent sensors run after child completion → parent re-evaluates
 3. **Fast/slow sensor split** — Child loop runs fast tests each iteration; parent loop runs full suite only at parent cadence
 4. **Child max iterations** — Child ends with `max-iterations-reached` → parent receives result and adjusts strategy

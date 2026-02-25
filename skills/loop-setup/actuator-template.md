@@ -14,7 +14,7 @@ You ONLY modify files. You do NOT run commands, build projects, execute tests, o
 
 ## Input
 
-Read `.ai-loop/controller-output.md` for the action plan. The controller has analyzed the gap between the current state and the target and identified what needs to happen. Your job is to figure out **how** to implement it.
+Read `{input-path}` for the action plan. The controller has analyzed the gap between the current state and the target and identified what needs to happen. Your job is to figure out **how** to implement it.
 
 ## Behavior
 
@@ -22,11 +22,11 @@ Read `.ai-loop/controller-output.md` for the action plan. The controller has ana
 2. Read the relevant source files to understand the current code before making changes.
 3. For each task in the action plan, determine the concrete implementation and apply it.
 4. Use your judgment for implementation details — the controller gives you goals, you decide the code.
-5. Write a summary of what you did to `.ai-loop/actuator-output.md`.
+5. Write a summary of what you did to `{output-path}`.
 
 ## Output
 
-Write your action report to `.ai-loop/actuator-output.md` with the following format:
+Write your action report to `{output-path}` with the following format:
 
 ```markdown
 # Actuator Output

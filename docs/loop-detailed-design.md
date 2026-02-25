@@ -12,47 +12,63 @@ For the abstract definitions of agents, artifacts, data flow, and guarantees, se
 
 ## 2. Plugin Structure
 
+> **Note:** As of v0.2.0, the plugin uses hierarchical flow-based execution. See [Hierarchical Loops Design](hierarchical-loops-design.md) for the full design. This section reflects the updated structure.
+
 ```
 ai-loops/                              # Plugin root (this repository)
 ├── .claude-plugin/
-│   └── plugin.json                    # Plugin manifest (name: "ai-loops")
+│   └── plugin.json                    # Plugin manifest (name: "ai-loops", version: "0.2.0")
 ├── skills/
 │   ├── loop/
-│   │   └── SKILL.md                   # /loop — orchestrator (runs the loop)
+│   │   └── SKILL.md                   # /loop — recursive hierarchical orchestrator
 │   ├── loop-setup/
-│   │   ├── SKILL.md                   # /loop-setup — set up or refresh all agents
+│   │   ├── SKILL.md                   # /loop-setup — set up or refresh flow topology
+│   │   ├── outer-controller-template.md  # Template for root/composite-level controllers
+│   │   ├── inner-controller-template.md  # Template for child/setpoint-consuming controllers
 │   │   ├── sensor-template.md         # Template for sensor agents
-│   │   ├── controller-template.md     # Template for the controller agent
 │   │   └── actuator-template.md       # Template for the actuator agent
 │   └── loop-status/
-│       └── SKILL.md                   # /loop-status — inspect current state
+│       └── SKILL.md                   # /loop-status — inspect hierarchical run state
 └── README.md
 ```
 
 | Path | Role | Claude Code construct |
 |---|---|---|
-| `skills/loop/SKILL.md` | Orchestrator | Skill (`/loop`) |
-| `skills/loop-setup/SKILL.md` | Setup & refresh all agents | Skill (`/loop-setup`) |
-| `skills/loop-status/SKILL.md` | Status inspection | Skill (`/loop-status`) |
+| `skills/loop/SKILL.md` | Recursive hierarchical orchestrator | Skill (`/loop`) |
+| `skills/loop-setup/SKILL.md` | Setup & refresh flow topology and agents | Skill (`/loop-setup`) |
+| `skills/loop-status/SKILL.md` | Hierarchical status inspection | Skill (`/loop-status`) |
+| `skills/loop-setup/outer-controller-template.md` | Root/composite controller template | Companion file loaded by `/loop-setup` |
+| `skills/loop-setup/inner-controller-template.md` | Child/setpoint controller template | Companion file loaded by `/loop-setup` |
 | `skills/loop-setup/sensor-template.md` | Sensor agent template | Companion file loaded by `/loop-setup` |
-| `skills/loop-setup/controller-template.md` | Controller agent template | Companion file loaded by `/loop-setup` |
 | `skills/loop-setup/actuator-template.md` | Actuator agent template | Companion file loaded by `/loop-setup` |
 
-After setup, the **project** contains concrete agents and runtime artifacts:
+After setup, the **project** contains concrete agents, flow configuration, and run-based artifacts:
 
 ```
 .claude/agents/                        # Concrete agents (project-local)
 ├── loop-sensor-compilation.md         # Sensor: runs javac
 ├── loop-sensor-tests.md               # Sensor: runs mvn test
-├── loop-controller.md                 # Controller: knows all sensors, targets, priorities
+├── loop-controller-delivery.md        # Outer controller (composite-actuator level)
+├── loop-controller-implement.md       # Inner controller (setpoint-consuming level)
 └── loop-actuator.md                   # Actuator: applies code changes
 
-.ai-loop/                             # Runtime artifacts
-├── sensor-compilation-output.md       # One output per sensor
-├── sensor-tests-output.md
-├── controller-output.md
-├── actuator-output.md
-└── orchestrator-output.md
+.ai-loop/                             # Configuration and runtime artifacts
+├── flow.yaml                         # Flow topology (single source of truth)
+└── runs/
+    └── {run-id}/
+        ├── run-state.md              # Root run state (status, execution stack)
+        └── nodes/
+            ├── delivery/             # Outer node artifacts
+            │   ├── orchestrator-output.md
+            │   ├── controller-output.md
+            │   ├── sensor-*-output.md
+            │   └── result-output.md
+            └── delivery/implement/   # Inner node artifacts
+                ├── orchestrator-output.md
+                ├── controller-output.md
+                ├── actuator-output.md
+                ├── sensor-*-output.md
+                └── result-output.md
 ```
 
 ---
