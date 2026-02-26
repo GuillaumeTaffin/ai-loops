@@ -55,6 +55,14 @@ Guide the user through designing their flow topology interactively:
    Ask: "How many levels does your flow need? (1 or 2 recommended)"
 
 3. **For each level (outermost first)**, collect:
+   After collecting all sensor definitions for a level, **review sensor commands for overlap before finalizing**. Common redundancies:
+   - **Maven**: `mvn verify` already runs compile, test, spotless:check, jacoco. Separate sensors for these sub-goals are redundant — suggest a single sensor that runs `mvn verify` and extracts all metrics.
+   - **npm/bun**: `npm test` with coverage flags already produces coverage data. A separate coverage sensor is redundant.
+   - **Gradle**: `gradle check` typically includes test + lint. Separate sensors for these are redundant.
+   - **Cargo**: `cargo test` compiles and runs tests. A separate `cargo build` sensor is redundant.
+
+   If overlap is detected, suggest merging into a single composite sensor that runs one command and extracts multiple metrics. Explain the trade-off: fewer sensors = fewer agent spawns = faster iterations.
+
    - **Node ID**: A short, descriptive identifier (e.g., `delivery-loop`, `implement`, `tdd-cycle`).
    - **Sensors**: Which measurements to run at this level. Suggest based on project type:
      - **Fast sensors (inner level)**: compilation, typecheck, unit tests

@@ -70,9 +70,9 @@ Report to the user:
 
 ## Recursive Node Execution
 
-Execute the root flow node by calling the recursive procedure below. The root node's task specification is the user's task description.
+Execute the root flow node by calling the recursive procedure below. The root node's task specification is the user's task description. Pass `is_child_entry: false` for the root call.
 
-### `execute-node(node-config, node-path, task-spec, parent-iteration, run-id)`
+### `execute-node(node-config, node-path, task-spec, parent-iteration, run-id, is_child_entry)`
 
 This is the core recursive procedure. It executes one loop node to completion.
 
@@ -82,6 +82,7 @@ This is the core recursive procedure. It executes one loop node to completion.
 - `task-spec`: The task specification / setpoint for this node
 - `parent-iteration`: The parent's current iteration number (for dot-notation). Empty string for root.
 - `run-id`: The current run identifier
+- `is_child_entry`: Boolean. `true` when called from a composite actuator (Step 2E), `false` for the root node call.
 
 **Artifacts path:** `.ai-loop/runs/{run-id}/nodes/{node-path}/`
 
@@ -106,18 +107,45 @@ Update `run-state.md`: set `active-node-path` to this node's path and update `ex
 
 #### Step 1: Initial Measurement (Iteration 0)
 
-Spawn **all sensor agents in parallel** for this node. For each sensor in `node-config.sensors`:
-
-1. Read the agent file to get the full instructions.
-2. Determine the sensor's output path: `{artifacts-path}/sensor-{sensor-name}-output.md`
-3. Use `subagent_type: "Bash"` and `model: "haiku"`.
-4. In the prompt, include the full content of the sensor agent file as instructions, **replacing the `{output-path}` placeholder** with the actual output path.
-
-**All sensors must be spawned in the same message** so they run in parallel.
-
-After all sensors complete, compute the iteration label:
+Compute the iteration label:
 - If `parent-iteration` is empty: `"0"` (root node)
 - Else: `"{parent-iteration}.0"`
+
+**If `is_child_entry` is true** (node entered from a composite actuator):
+- Do NOT spawn sensor agents.
+- For each sensor in `node-config.sensors`, write a stub output file at `{artifacts-path}/sensor-{sensor-name}-output.md`:
+  ```markdown
+  ---
+  sensor: {sensor-name}
+  status: pending
+  ---
+  # Sensor Output: {sensor-name}
+  No baseline measurement — first iteration after parent controller decision.
+  ```
+- Commit with structured message:
+  ```
+  ai-loop[{node-path-display}]: iteration {iteration-label} — initial entry (sensors skipped)
+
+  [node-path] {node-path}
+  [level] {depth}
+  [iteration] {iteration-label}
+  [status] running
+  [target-met] false
+  [sensors] {sensor1}: pending, {sensor2}: pending
+  [action] initial entry (sensors skipped)
+  ```
+
+**Otherwise** (root node or normal entry):
+
+Spawn **a single sensor agent** to run all sensors for this node:
+
+1. Read ALL sensor agent files for this node.
+2. For each sensor, determine the output path: `{artifacts-path}/sensor-{sensor-name}-output.md`
+3. Spawn ONE Task agent with `subagent_type: "Bash"` and `model: "haiku"`.
+4. In the combined prompt:
+   - List each sensor with its name, full agent instructions (with `{output-path}` replaced), and output path.
+   - Instruct: run each sensor's command sequentially, write each output file.
+   - Same rules: read-only, no judgment, report errors as-is.
 
 Commit with structured message:
 ```
@@ -158,9 +186,14 @@ Compute the iteration label:
 - If `parent-iteration` is empty: `"{iteration}"` (root node)
 - Else: `"{parent-iteration}.{iteration}"`
 
+**Pre-check sensor status for model selection:**
+Read all sensor output files for this node. Parse the YAML frontmatter for the `status` field.
+- If ALL sensors have `status: pass`: the controller will be spawned with `model: "haiku"` (trivial convergence decision).
+- Otherwise: the controller will be spawned with the model from the agent file frontmatter (default: `opus`).
+
 Spawn the controller agent:
 1. Read the controller agent file from the path in `node-config.controller`.
-2. Determine the model from the agent file's frontmatter (default: `opus`).
+2. Determine the model: use `haiku` if the pre-check found all sensors passing, otherwise use the agent file's frontmatter model (default: `opus`).
 3. Use `subagent_type: "Bash"` and the determined model.
 4. In the prompt, include the full agent file content, **replacing these placeholders**:
    - `{artifacts-path}` → the actual artifacts path
@@ -200,14 +233,15 @@ Check `node-config.actuator.strategy`:
      node-path = {current-node-path}/{child-id},
      task-spec = {the controller's action plan text},
      parent-iteration = {current iteration label},
-     run-id = {run-id}
+     run-id = {run-id},
+     is_child_entry = true
    )
    ```
 4. After the child returns, read the child's `result-output.md` for status.
 
 ##### F. Spawn sensors (re-measure)
 
-Spawn **all sensor agents in parallel** again (same as Step 1).
+Spawn **a single sensor agent** to re-run all measurements (same procedure as Step 1).
 
 ##### G. Commit
 
@@ -308,7 +342,7 @@ ai-loop[{node-path with > separators}]: iteration {dot-label} — {one-line summ
 ## Important Rules
 
 - **You are the orchestrator.** Do not perform measurement, diagnosis, or code modification yourself. Delegate to agents.
-- **Sensors run in parallel.** Always spawn all sensors for a node in the same message.
+- **Sensors run in a single agent.** Spawn ONE Bash/Haiku agent per measurement cycle that runs all sensor commands sequentially and writes all output files.
 - **Controller and actuator run sequentially.** Wait for each to complete before proceeding.
 - **One commit per iteration per node.** Each iteration boundary produces exactly one commit.
 - **Report progress** to the user after each root-level iteration: iteration number, target-met status, brief summary of what happened (including any inner loop activity).

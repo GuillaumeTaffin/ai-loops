@@ -20,15 +20,20 @@ Run the following command:
 
 Write the result to `{output-path}` with the following format:
 
-- YAML frontmatter with `sensor: {name}`
+- YAML frontmatter with `sensor: {name}` and `status: pass|fail`
 - A "Command" section showing what was run
 - An "Output" section with the command output (summarize if very verbose — keep the useful signal, discard noise)
+
+**Status determination:**
+- Set `status: pass` if the command exits with code 0 and the output indicates success.
+- Set `status: fail` if the command exits with a non-zero code or the output indicates failure.
 
 Example output structure:
 
 ```markdown
 ---
 sensor: {name}
+status: pass
 ---
 
 # Sensor Output: {name}
